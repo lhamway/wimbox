@@ -1,0 +1,317 @@
+/*                                                     */
+/* FTP LISTEN PROGRAM                                  */
+/*                                                     */
+/*   IT WILL RESET ALL CONTROL DATA AREAS LISTED IN    */
+/*   THIS CL TO NEW JULIAN DATE AND SEQUENCE NUMBER    */
+/*   EQUAL TO 001.  GENERATE FROM DAYEND JOBS DAILY.   */
+/*                                                     */
+/*                                                     */
+/*                                                     */
+/*                                                     */
+             PGM        PARM(&BTIME)
+
+             DCLF       FPSYSCNT
+
+             DCL        VAR(&BTIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&STIME) TYPE(*DEC) LEN(6 0)
+             DCL        VAR(&CTIME) TYPE(*DEC) LEN(6 0)
+             DCL        VAR(&TIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&GTIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&XTIME) TYPE(*DEC) LEN(6)
+             DCL        VAR(&DATE) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&JULIAN) TYPE(*CHAR) LEN(5)
+             DCL        VAR(&JUL) TYPE(*CHAR) LEN(3)
+             DCL        VAR(&HTCNTL) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&SHCNTL) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&KDCNTL) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&SDCNTL) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&CCCNTL) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&JOB) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&USER) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&JOBNBR) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&SEQ#) TYPE(*DEC) LEN(2 0)
+             DCL        VAR(&SEQNO) TYPE(*CHAR) LEN(2)
+             DCL        VAR(&CURYR) TYPE(*CHAR) LEN(1)
+             DCL        VAR(&YEAR) TYPE(*CHAR) LEN(1)
+             DCL        VAR(&NBRRCDS) TYPE(*DEC) LEN(10) VALUE(0)
+
+             RTVSYSVAL  SYSVAL(QDATE) RTNVAR(&DATE)
+             CVTDAT     DATE(&DATE) TOVAR(&JULIAN) FROMFMT(*MDY) +
+                          TOFMT(*JUL) TOSEP(*NONE)
+
+             /*******************************************************/
+             /* CHECK DAYEND PROGRESS FLAG. IF DAYEND IN PROGRESS, */
+             /* RESCHEDULE AND RESUBMIT.                           */
+             /*******************************************************/
+
+             RCVF       RCDFMT(SYSCNT00)
+
+             IF         (&SYSDAE *NE 'N') +
+                  DO
+                  CHGVAR     &STIME &BTIME
+TENMORE:          RTVSYSVAL  SYSVAL(QTIME) RTNVAR(&TIME)
+                  CHGVAR     &CTIME &TIME
+                  CHGVAR     VAR(&STIME) VALUE(&STIME + 001000)
+                  IF         COND(&CTIME *GT &STIME) THEN(GOTO +
+                              CMDLBL(TENMORE))
+
+                  SNDMSG     MSG('/* END OF DAY STILL IN PROGRESS.  +
+                               RECHEDULING FTP LISTEN JOB FOR &STIME. +
+                               */') TOUSR(*SYSOPR)
+
+                  CHGVAR     &GTIME &STIME
+             SBMJOB     CMD(CALL PGM(ADDD07USR/@FTPLSTNCL) +
+                          PARM(&GTIME)) JOBQ(FTPJOBQ)
+                  ENDDO
+
+
+             /*******************************************************/
+             /* CHECK ALL FTP FOLDERS FOR ORDERS OR INVOICES. IF    */
+             /* FILES EXIST, MOVE THEM TO THEIR APPROPRIATE DESTINA */
+             /* FOLDERS OR FILES FOR FURTHER PROCESSING.            */
+             /*******************************************************/
+
+/*           GOTO       CMDLBL(STVNHDW)             */
+
+/*  CALL TOBACCO MARKET JOB. THIS JOB IS NOT RELIANT ON DATA AREAS. */
+/*  TOBACCO MARKET ORDERS AND INVOICES ARE PROCESSED FROM STREAM FILES */
+/*  IN THE iSERIES INTERGRATED FILE SYSTEM VS DOCUMENTS IN THE iSERIES */
+/*  FOLDER SYSTEM.                                                  */
+
+             CALL       PGM(ADDD07USR/@TMOFTPCLB)
+
+
+/*  NEW. GENERIC FTP ORDERS PROGRAM FOR ALL FTP CUSTOMERS.          */
+
+             CALL       PGM(ADDD07USR/@ADDFTPCLB)
+
+
+             /* HARRIS TEETER */
+AGAIN:
+             RTVDTAARA  DTAARA(HTCNTL) RTNVAR(&HTCNTL)
+             CHGVAR     &SEQNO %SST(&HTCNTL 7 2)
+             CHGVAR     &SEQ# &SEQNO
+             CHGVAR     &YEAR %SST(&HTCNTL 3 1)
+             CHGVAR     &CURYR %SST(&DATE 6 1)
+             CHGVAR     &JUL %SST(&HTCNTL 4 3)
+
+/*  MAKE SURE THE JULIAN DATE AND YEAR FROM THE DATA AREA IS TODAYS */
+/*  JULIAN DATE.  IF NOT UPDATE THE DATA AREA.                      */
+
+             IF         COND(%SST(&HTCNTL 3 4) *EQ %SST(&JULIAN 2 +
+                          4)) THEN(GOTO CMDLBL(GOOD))
+
+             CALL       PGM(ADDD07USR/@CNTRLCL)
+
+             GOTO       CMDLBL(AGAIN)
+
+GOOD:        CPYFRMPCD  FROMFLR('HTFTP/ORDERS') +
+                          TOFILE(ADDD07USR/HTPOU01) FROMDOC(&HTCNTL)
+
+             MONMSG     MSGID(CPF8A82 CPA0701 IWS1611) EXEC(GOTO +
+                          CMDLBL(STVNHDW))
+
+             CALL       PGM(ADDD07USR/HTPOCL) /* HARRIS TEETER +
+                          PURCHASE ORDERS */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR HARRIS TEETER +
+                          INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+             MOVDOC     FROMDOC(&HTCNTL) FROMFLR('HTFTP/ORDERS') +
+                          TOFLR('HTFTP/ORDERS/ARCHIVE')
+
+/*                                                        */
+/*  INCREMENT SEQUENCE NUMBER AND UPDATE DATA AREA        */
+/*                                                        */
+
+             CHGVAR     VAR(&SEQ#) VALUE(&SEQ# + 1)
+             CHGVAR     VAR(&SEQNO) VALUE(&SEQ#)
+             CHGVAR     %SST(&HTCNTL 7 2) VALUE(&SEQNO)
+             CHGDTAARA  DTAARA(ADDD07USR/HTCNTL) VALUE(&HTCNTL)
+
+
+             /* STEVEN'S HARDWARE */
+
+STVNHDW:     RTVDTAARA  DTAARA(SHCNTL) RTNVAR(&SHCNTL)
+             CHGVAR     &SEQNO %SST(&SHCNTL 7 2)
+             CHGVAR     &SEQ# &SEQNO
+             CHGVAR     &YEAR %SST(&SHCNTL 3 1)
+             CHGVAR     &CURYR %SST(&DATE 6 1)
+             CHGVAR     &JUL %SST(&SHCNTL 4 3)
+
+             CPYFRMPCD  FROMFLR('STVNHDW/ORDERS') +
+                          TOFILE(ADDD07USR/SHPOU01) FROMDOC(&SHCNTL)
+
+             MONMSG     MSGID(CPF8A82 CPA0701 IWS1611) EXEC(GOTO +
+                          CMDLBL(KERR))
+
+             CALL       PGM(ADDD07USR/SHPOCL) /* STEVEN'S +
+                          HARDWARE */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR STEVENS HARDWARE +
+                          INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+             MOVDOC     FROMDOC(&SHCNTL) FROMFLR('STVNHDW/ORDERS') +
+                          TOFLR('STVNHDW/ORDERS/ARCHIVE')
+
+/*                                                        */
+/*  INCREMENT SEQUENCE NUMBER AND UPDATE DATA AREA        */
+/*                                                        */
+
+             CHGVAR     VAR(&SEQ#) VALUE(&SEQ# + 1)
+             CHGVAR     VAR(&SEQNO) VALUE(&SEQ#)
+             CHGVAR     %SST(&SHCNTL 7 2) VALUE(&SEQNO)
+             CHGDTAARA  DTAARA(ADDD07USR/SHCNTL) VALUE(&SHCNTL)
+
+             /* KERR DRUG         */
+
+KERR:        RTVDTAARA  DTAARA(KDCNTL) RTNVAR(&KDCNTL)
+             CHGVAR     &SEQNO %SST(&KDCNTL 7 2)
+             CHGVAR     &SEQ# &SEQNO
+             CHGVAR     &YEAR %SST(&KDCNTL 3 1)
+             CHGVAR     &CURYR %SST(&DATE 6 1)
+             CHGVAR     &JUL %SST(&KDCNTL 4 3)
+
+             CPYFRMPCD  FROMFLR('KDFTP/ORDERS') +
+                          TOFILE(ADDD07USR/KDPOU01) FROMDOC(&KDCNTL)
+
+             MONMSG     MSGID(CPF8A82 CPA0701 IWS1611) EXEC(GOTO +
+                          CMDLBL(SMKRDPT))
+
+             CALL       PGM(ADDD07USR/KDPOCL) /* KERR +
+                          DRUG */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR KERR DRUG +
+                          INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+             MOVDOC     FROMDOC(&KDCNTL) FROMFLR('KDFTP/ORDERS') +
+                          TOFLR('KDFTP/ORDERS/ARCHIVE')
+
+/*                                                        */
+/*  INCREMENT SEQUENCE NUMBER AND UPDATE DATA AREA        */
+/*                                                        */
+
+             CHGVAR     VAR(&SEQ#) VALUE(&SEQ# + 1)
+             CHGVAR     VAR(&SEQNO) VALUE(&SEQ#)
+             CHGVAR     %SST(&KDCNTL 7 2) VALUE(&SEQNO)
+             CHGDTAARA  DTAARA(ADDD07USR/KDCNTL) VALUE(&KDCNTL)
+
+             /* SMOKERS DEPOT */
+
+SMKRDPT:     RTVDTAARA  DTAARA(SDCNTL) RTNVAR(&SDCNTL)
+             CHGVAR     &SEQNO %SST(&SDCNTL 7 2)
+             CHGVAR     &SEQ# &SEQNO
+             CHGVAR     &YEAR %SST(&SDCNTL 3 1)
+             CHGVAR     &CURYR %SST(&DATE 6 1)
+             CHGVAR     &JUL %SST(&SDCNTL 4 3)
+
+             CPYFRMPCD  FROMFLR('SDFTP/ORDERS') +
+                          TOFILE(ADDD07USR/SDPOU01) FROMDOC(&SDCNTL)
+
+             MONMSG     MSGID(CPF8A82 CPA0701 IWS1611) EXEC(GOTO +
+                          CMDLBL(CGCHPR))
+
+/*           CALL       PGM(ADDD07USR/SDPOCL) /* SMOKERS DEPOT + */
+/*                        PURCHASE ORDERS */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR SMOKERS DEPOT +
+                          INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+             MOVDOC     FROMDOC(&SDCNTL) FROMFLR('SDFTP/ORDERS') +
+                          TOFLR('SDFTP/ORDERS/ARCHIVE')
+
+/*                                                        */
+/*  INCREMENT SEQUENCE NUMBER AND UPDATE DATA AREA        */
+/*                                                        */
+
+             CHGVAR     VAR(&SEQ#) VALUE(&SEQ# + 1)
+             CHGVAR     VAR(&SEQNO) VALUE(&SEQ#)
+             CHGVAR     %SST(&SDCNTL 7 2) VALUE(&SEQNO)
+             CHGDTAARA  DTAARA(ADDD07USR/SDCNTL) VALUE(&SDCNTL)
+
+
+
+             /* CIGARETTES CHEAPER */
+
+CGCHPR:      RTVDTAARA  DTAARA(CCCNTL) RTNVAR(&CCCNTL)
+
+             CPYFRMPCD  FROMFLR('CCFTP/ORDERS') +
+                          TOFILE(ADDD07USR/CCPOU01) FROMDOC(&CCCNTL)
+
+             MONMSG     MSGID(CPF8A82 CPA0701 IWS1611) EXEC(GOTO +
+                          CMDLBL(TINEEG))
+
+/*           CALL       PGM(ADDD07USR/CCPOCL) /* CIGARETTERS CHEAPER + */
+/*                        PURCHASE ORDERS */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR CIGARETTES +
+                          CHEAPER INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+             MOVDOC     FROMDOC(&CCCNTL) FROMFLR('CCFTP/ORDERS') +
+                          TOFLR('CCFTP/ORDERS/ARCHIVE')
+
+
+/*           GOTO       CMDLBL(RSCHDL)                   */
+
+             /* TINEE GIANT   */
+TINEEG:
+
+/*  CREATE DOCUMENT LIST FROM TGFTP/ORDERS FOLDER                   */
+
+/*           QRYDOCLIB  FLR('TGFTP/ORDERS') +                       */
+/*                        OUTFILE(ADDD07USR/TGORDRLST)              */
+
+             RTVMBRD    FILE(ADDD07USR/TGORDRLST) NBRCURRCD(&NBRRCDS)
+
+             IF         COND(&NBRRCDS *EQ 0) THEN(GOTO CMDLBL(RSCHDL))
+
+/*  CREATE DOCUMENT LIST FROM TGFTP/ORDERS/ARCHIVE FOLDER      */
+
+             QRYDOCLIB  FLR('TGFTP/ORDERS/ARCHIVE') +
+                          OUTFILE(ADDD07USR/TGOARCLST)
+
+             CALL       PGM(ADDD07USR/TGORDERSBM)
+
+             CLRPFM     FILE(ADDD07USR/TGORDRLST) /* CLEAR TINEE +
+                          GIANT ORDER DOCUMENT LIST FILE */
+
+             CLRPFM     FILE(ADDD07USR/TGOARCLST) /* CLEAR TINEE +
+                          GIANT ORDERS ARCHIVE DOCUMENT LIST FILE */
+
+             SNDMSG     MSG('/* PURCHASE ORDERS FOR TINEE GIANT +
+                          INTERFACED TO TPS */') TOUSR(*SYSOPR)
+
+
+ RSCHDL:     CHGVAR     VAR(&XTIME) VALUE(&BTIME)
+ XRSCHDL:    CHGVAR     VAR(&STIME) VALUE(&XTIME + 001000)
+             CHGVAR     &GTIME &STIME
+             IF         COND(%SST(&GTIME 3 2) *EQ '60') THEN(DO)
+                          CHGVAR     VAR(&STIME) VALUE(&XTIME + 005000)
+                          CHGVAR     &GTIME &STIME
+                          ENDDO
+
+
+             /*******************************************************/
+             /* DO NOT SUBMIT AFTER 2350.                          */
+             /*******************************************************/
+
+             RTVSYSVAL  SYSVAL(QTIME) RTNVAR(&TIME)
+             CHGVAR     VAR(&CTIME) VALUE(&TIME)
+             IF         COND(&CTIME *GE 235000) THEN(GOTO +
+                          CMDLBL(ENDPGM))
+
+             RTVJOBA    JOB(&JOB) USER(&USER) NBR(&JOBNBR)
+ /*         DSPJOBLOG  JOB(&JOBNBR/&USER/&JOB) OUTPUT(*PRINT)       */
+
+             /*******************************************************/
+             /* RESUBMIT JOB                                       */
+             /*******************************************************/
+
+             SBMJOB     CMD(CALL PGM(ADDD07USR/@FTPLSTNCL) +
+                          PARM(&GTIME)) JOB(FTPLISTEN) +
+                          JOBQ(FTPJOBQ) SCDTIME(&GTIME)
+
+             MONMSG     MSGID(CPF1338) EXEC(GOTO CMDLBL(XRSCHDL))
+             MONMSG     MSGID(CPF1634) EXEC(GOTO CMDLBL(XRSCHDL))
+
+ENDPGM:      ENDPGM

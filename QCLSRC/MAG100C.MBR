@@ -1,0 +1,130 @@
+/*                                                     */
+/* AI2 EMAIL ORDER CONFIRMATION LISTEN PROGRAM         */
+/*                                                     */
+/*   IT WILL RESET ALL CONTROL DATA AREAS LISTED IN    */
+/*   THIS CL TO NEW JULIAN DATE AND SEQUENCE NUMBER    */
+/*   EQUAL TO 001.  GENERATE FROM DAYEND JOBS DAILY.   */
+/*                                                     */
+/*                                                     */
+/*                                                     */
+/*                                                     */
+             PGM        PARM(&BTIME)
+
+             DCLF       FPSYSCNT
+
+             DCL        VAR(&BTIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&STIME) TYPE(*DEC) LEN(6 0)
+             DCL        VAR(&CTIME) TYPE(*DEC) LEN(6 0)
+             DCL        VAR(&TIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&GTIME) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&XTIME) TYPE(*DEC) LEN(6)
+             DCL        VAR(&DATE) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&JULIAN) TYPE(*CHAR) LEN(5)
+             DCL        VAR(&JUL) TYPE(*CHAR) LEN(3)
+             DCL        VAR(&FNAME) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&ORD#) TYPE(*CHAR) LEN(7) VALUE('       ')
+             DCL        VAR(&EMAIL) TYPE(*CHAR) LEN(1) VALUE('N')
+             DCL        VAR(&JOB) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&USER) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&JOBNBR) TYPE(*CHAR) LEN(6)
+             DCL        VAR(&SEQ#) TYPE(*DEC) LEN(2 0)
+             DCL        VAR(&SEQNO) TYPE(*CHAR) LEN(2)
+             DCL        VAR(&CURYR) TYPE(*CHAR) LEN(1)
+             DCL        VAR(&YEAR) TYPE(*CHAR) LEN(1)
+             DCL        VAR(&NBRRCDS) TYPE(*DEC) LEN(10) VALUE(0)
+             DCL        VAR(&USRDLIB) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&DSCNTRL) TYPE(*CHAR) LEN(512)
+
+             RTVDTAARA  DTAARA(DSCNTRL) RTNVAR(&DSCNTRL)
+
+             CHGVAR     VAR(&USRDLIB) VALUE(%SST(&DSCNTRL 101 3) +
+                          *CAT 'D07USR ')
+
+             RTVSYSVAL  SYSVAL(QDATE) RTNVAR(&DATE)
+             CVTDAT     DATE(&DATE) TOVAR(&JULIAN) FROMFMT(*MDY) +
+                          TOFMT(*JUL) TOSEP(*NONE)
+
+             /*******************************************************/
+             /* CHECK DAYEND PROGRESS FLAG. IF DAYEND IN PROGRESS, */
+             /* RESCHEDULE AND RESUBMIT.                           */
+             /*******************************************************/
+
+             RCVF       RCDFMT(SYSCNT00)
+
+             IF         (&SYSDAE *NE 'N') +
+                  DO
+                  CHGVAR     &STIME &BTIME
+TENMORE:          RTVSYSVAL  SYSVAL(QTIME) RTNVAR(&TIME)
+                  CHGVAR     &CTIME &TIME
+                  CHGVAR     VAR(&STIME) VALUE(&STIME + 001000)
+                  IF         COND(&CTIME *GT &STIME) THEN(GOTO +
+                              CMDLBL(TENMORE))
+
+                  SNDMSG     MSG('/* END OF DAY STILL IN PROGRESS.  +
+                              RESCHEDULING AI2 LISTEN JOB FOR &STIME. +
+                              */') TOUSR(*SYSOPR)
+
+                  CHGVAR     &GTIME &STIME
+             SBMJOB     CMD(CALL PGM(&USRDLIB/@AI2LSTNCL) +
+                          PARM(&GTIME)) JOBQ(&USRDLIB/EMLJOBQ)
+                  ENDDO
+
+             CLRPFM     FILE(&USRDLIB/EMAI2OCFN3)
+
+             CALL       PGM(&USRDLIB/AI2EMCFN01) PARM(&ORD# &EMAIL) +
+                          /* AI2 EMAIL CONFIRMATION */
+
+             IF         COND(&EMAIL *EQ 'Y') THEN(DO)
+
+/*                                                        */
+/*  RUN QUERY                                             */
+/*                                                        */
+
+
+             QIQE/RUNIQ QUERY(&USRDLIB/ORDCFN02) QRYSLT((5 *SAME +
+                          &ORD#))
+
+
+             ENDDO
+
+ RSCHDL:     CHGVAR     VAR(&XTIME) VALUE(&BTIME)
+ XRSCHDL:    CHGVAR     VAR(&STIME) VALUE(&XTIME + 000200)
+             CHGVAR     &GTIME &STIME
+             IF         COND(%SST(&GTIME 3 2) *EQ '60') THEN(DO)
+                          CHGVAR     VAR(&STIME) VALUE(&XTIME + 004200)
+                          CHGVAR     &GTIME &STIME
+                          ENDDO
+
+
+             /*******************************************************/
+             /* DO NOT SUBMIT AT 100000 OR 140000.                 */
+             /*******************************************************/
+
+             IF         COND((&GTIME *EQ '095800') *OR (&GTIME *EQ +
+                          '135800')) THEN(DO)
+                          CHGVAR     VAR(&STIME) VALUE(&XTIME + 004400)
+                          CHGVAR     &GTIME &STIME
+                          ENDDO
+
+             /*******************************************************/
+             /* DO NOT SUBMIT AFTER 2350.                          */
+             /*******************************************************/
+
+             RTVSYSVAL  SYSVAL(QTIME) RTNVAR(&TIME)
+             CHGVAR     VAR(&CTIME) VALUE(&TIME)
+             IF         COND(&CTIME *GE 235000) THEN(GOTO +
+                          CMDLBL(ENDPGM))
+
+             RTVJOBA    JOB(&JOB) USER(&USER) NBR(&JOBNBR)
+
+             /*******************************************************/
+             /* RESUBMIT JOB                                       */
+             /*******************************************************/
+
+             SBMJOB     CMD(CALL PGM(&USRDLIB/@AI2LSTNCL) +
+                          PARM(&GTIME)) JOB(AI2EMAIL) +
+                          JOBQ(&USRDLIB/EMLJOBQ) SCDTIME(&GTIME)
+
+/*          DSPJOBLOG  JOB(&JOBNBR/&USER/&JOB) OUTPUT(*PRINT)     */
+
+ENDPGM:      ENDPGM
